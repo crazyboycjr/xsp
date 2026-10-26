@@ -128,7 +128,7 @@ fn number(value: Option<Retained<AnyObject>>) -> Option<Retained<NSNumber>> {
 
 /// Every window, front to back. Owner, layer and bounds need no Screen Recording permission.
 fn window_list(options: u32) -> Vec<Window> {
-    let raw = unsafe { CGWindowListCopyWindowInfo(options | kCGWindowListExcludeDesktopElements, 0) };
+    let raw = unsafe { CGWindowListCopyWindowInfo(options, 0) };
     let Some(list) = (unsafe { Retained::from_raw(raw as *mut NSArray<NSDictionary<NSString, AnyObject>>) }) else {
         return Vec::new();
     };
@@ -372,7 +372,7 @@ fn launched(app: &NSRunningApplication) -> f64 {
 }
 
 fn pads() -> Vec<Option<Pad>> {
-    let all = window_list(kCGWindowListOptionAll);
+    let all = window_list(kCGWindowListOptionAll | kCGWindowListExcludeDesktopElements);
     (0..PADS)
         .map(|n| {
             // The first one launched: Alacritty's SpawnNewInstance starts more under the same bundle
@@ -454,10 +454,25 @@ thread_local! {
     /// Raised while xsp runs its own hide, so the focus it hands back is not mistaken for the user
     /// switching away, which would trigger the auto-hide on top of it.
     static HIDING: RefCell<u32> = const { RefCell::new(0) };
+    /// The active Space at the previous app activation. An activation on a different Space belongs to
+    /// a desktop switch (leaving one, or arriving at one), which must never hide a scratchpad.
+    static LAST_SPACE: RefCell<u64> = const { RefCell::new(0) };
 }
 
 fn is_pad_app(app: &NSRunningApplication) -> bool {
     app.bundleIdentifier().is_some_and(|id| id.to_string().starts_with("local.xsp."))
+}
+
+/// Whether the app shows a window on this Space, the desktop included: Finder's desktop is on every
+/// Space, so activating Finder never takes the user to another desktop.
+fn app_on_screen_here(pid: i32) -> bool {
+    window_list(kCGWindowListOptionOnScreenOnly).iter().any(|w| w.pid == pid && w.width >= 100.0 && w.height >= 100.0)
+}
+
+fn app_has_windows(pid: i32) -> bool {
+    window_list(kCGWindowListOptionAll | kCGWindowListExcludeDesktopElements)
+        .iter()
+        .any(|w| w.pid == pid && w.width >= 100.0 && w.height >= 100.0)
 }
 
 fn front_pid() -> i32 {
@@ -480,7 +495,7 @@ fn note_activation(app: &NSRunningApplication) {
 /// window on this Space, else the app of the topmost window here, else Finder, whose desktop is
 /// on every Space. Never an app with no window here: activating one makes macOS switch Spaces.
 fn focus_target(skip: &[i32]) -> Option<Retained<NSRunningApplication>> {
-    let here: Vec<i32> = window_list(kCGWindowListOptionOnScreenOnly)
+    let here: Vec<i32> = window_list(kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements)
         .iter()
         .filter(|w| w.layer == 0 && w.width >= 100.0 && w.height >= 100.0 && !skip.contains(&w.pid))
         .map(|w| w.pid)
@@ -681,6 +696,36 @@ fn register_hot_keys() {
     }
 }
 
+/// When another app becomes active, hide the scratchpad shown on this desktop, but only for a switch
+/// within the desktop (alt+tab, cmd+tab, a click): leaving a desktop keeps its scratchpad there for
+/// when the user comes back, as in xmonad. Decided at the moment of the activation:
+/// - the active Space differs from the one at the previous activation: this activation is part of a
+///   desktop switch (ZeroSpace switches first and then focuses a window, leaving or arriving), keep;
+/// - the new app has a window on screen here, or no windows at all: the user stays here, hide;
+/// - otherwise its windows are all on other desktops and macOS is taking the user there, keep.
+/// Pad-to-pad is exclusivity, handled by toggle, and HIDING skips xsp's own focus hand-back.
+fn auto_hide(app: &NSRunningApplication) {
+    let space = active_space();
+    let previous = LAST_SPACE.with_borrow_mut(|last| std::mem::replace(last, space));
+    let pid = app.processIdentifier();
+    if is_pad_app(app) || pid == std::process::id() as i32 || HIDING.with_borrow(|d| *d > 0) {
+        return;
+    }
+    if previous != 0 && previous != space {
+        return;
+    }
+    let shown: Vec<Pad> = pads().into_iter().flatten().filter(Pad::shown_here).collect();
+    if shown.is_empty() {
+        return;
+    }
+    if !app_on_screen_here(pid) && app_has_windows(pid) {
+        log(&format!("{} (pid {}) has windows only on other desktops; keeping the scratchpad", name(app), pid));
+        return;
+    }
+    log(&format!("focus moved to {} (pid {}) on this desktop; hiding the shown scratchpad", name(app), pid));
+    hide(shown, "focus left the scratchpad");
+}
+
 fn observe_activations() {
     let block = RcBlock::new(|note: NonNull<NSNotification>| {
         let app = unsafe { note.as_ref() }
@@ -689,16 +734,7 @@ fn observe_activations() {
             .and_then(|a| a.downcast::<NSRunningApplication>().ok());
         if let Some(app) = app {
             note_activation(&app);
-            // Focus moved to another app (alt+tab, cmd+tab, a click): hide the shown scratchpad, so
-            // the windows underneath come forward. Pad-to-pad is exclusivity, handled by toggle, so
-            // a pad becoming active is ignored here; and HIDING skips xsp's own focus hand-back.
-            if !is_pad_app(&app) && app.processIdentifier() != std::process::id() as i32 && HIDING.with_borrow(|d| *d == 0) {
-                let shown: Vec<Pad> = pads().into_iter().flatten().filter(Pad::shown_here).collect();
-                if !shown.is_empty() {
-                    log(&format!("focus moved to {} (pid {}); hiding the shown scratchpad", name(&app), app.processIdentifier()));
-                    hide(shown, "focus left the scratchpad");
-                }
-            }
+            auto_hide(&app);
         }
     });
     let center = NSWorkspace::sharedWorkspace().notificationCenter();
@@ -752,6 +788,7 @@ fn daemon() {
     if let Some(front) = NSWorkspace::sharedWorkspace().frontmostApplication() {
         note_activation(&front);
     }
+    LAST_SPACE.with_borrow_mut(|last| *last = active_space());
     observe_activations();
     register_hot_keys();
     listen();
