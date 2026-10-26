@@ -451,6 +451,13 @@ thread_local! {
     /// Pads whose launch is in flight: a process that has not yet joined runningApplications, so a
     /// second key-press must not start a duplicate or rebuild the wrapper under it.
     static SPAWNING: RefCell<HashSet<usize>> = RefCell::new(HashSet::new());
+    /// Raised while xsp runs its own hide, so the focus it hands back is not mistaken for the user
+    /// switching away, which would trigger the auto-hide on top of it.
+    static HIDING: RefCell<u32> = const { RefCell::new(0) };
+}
+
+fn is_pad_app(app: &NSRunningApplication) -> bool {
+    app.bundleIdentifier().is_some_and(|id| id.to_string().starts_with("local.xsp."))
 }
 
 fn front_pid() -> i32 {
@@ -459,7 +466,7 @@ fn front_pid() -> i32 {
 
 fn note_activation(app: &NSRunningApplication) {
     let pid = app.processIdentifier();
-    if pid == std::process::id() as i32 || app.bundleIdentifier().is_some_and(|id| id.to_string().starts_with("local.xsp.")) {
+    if pid == std::process::id() as i32 || is_pad_app(app) {
         return;
     }
     RECENT.with_borrow_mut(|recent| {
@@ -498,6 +505,9 @@ fn hide(pads: Vec<Pad>, why: &str) {
     let pids: Vec<i32> = pads.iter().map(|p| p.pid).collect();
     let names: Vec<String> = pads.iter().map(|p| format!("scratch-{}", p.n)).collect();
     log(&format!("hide {} ({why})", names.join(", ")));
+    HIDING.with_borrow_mut(|d| *d += 1);
+    // Hand focus back only when a scratchpad is the focused window; when focus has already moved
+    // elsewhere (the auto-hide case), leave it where the user put it.
     if pids.contains(&front_pid()) {
         if let Some(target) = focus_target(&pids) {
             target.activateWithOptions(NSApplicationActivationOptions::ActivateAllWindows);
@@ -515,6 +525,7 @@ fn hide(pads: Vec<Pad>, why: &str) {
                 log(&format!("could not hide scratch-{} (pid {})", pad.n, pad.pid));
             }
         }
+        HIDING.with_borrow_mut(|d| *d = d.saturating_sub(1));
     });
 }
 
@@ -678,6 +689,16 @@ fn observe_activations() {
             .and_then(|a| a.downcast::<NSRunningApplication>().ok());
         if let Some(app) = app {
             note_activation(&app);
+            // Focus moved to another app (alt+tab, cmd+tab, a click): hide the shown scratchpad, so
+            // the windows underneath come forward. Pad-to-pad is exclusivity, handled by toggle, so
+            // a pad becoming active is ignored here; and HIDING skips xsp's own focus hand-back.
+            if !is_pad_app(&app) && app.processIdentifier() != std::process::id() as i32 && HIDING.with_borrow(|d| *d == 0) {
+                let shown: Vec<Pad> = pads().into_iter().flatten().filter(Pad::shown_here).collect();
+                if !shown.is_empty() {
+                    log(&format!("focus moved to {} (pid {}); hiding the shown scratchpad", name(&app), app.processIdentifier()));
+                    hide(shown, "focus left the scratchpad");
+                }
+            }
         }
     });
     let center = NSWorkspace::sharedWorkspace().notificationCenter();
