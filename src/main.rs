@@ -265,8 +265,8 @@ fn sign_bundle(n: usize) {
         log(&format!("no {keychain}; scratch-{n} stays ad-hoc signed and its grants will not persist"));
         return;
     }
-    let _ = Command::new("security").args(["unlock-keychain", "-p", SIGNING_KEYCHAIN_PASSWORD, &keychain]).status();
-    let signed = Command::new("codesign")
+    let _ = Command::new("/usr/bin/security").args(["unlock-keychain", "-p", SIGNING_KEYCHAIN_PASSWORD, &keychain]).status();
+    let signed = Command::new("/usr/bin/codesign")
         .args(["--force", "--keychain", &keychain, "--sign", SIGNING_IDENTITY, "--identifier", &bundle_id(n), &bundle_path(n)])
         .status();
     if !matches!(signed, Ok(status) if status.success()) {
