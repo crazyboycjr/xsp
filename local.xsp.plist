@@ -8,6 +8,11 @@
     <string>/Users/you/.local/bin/xsp</string>
     <string>daemon</string>
   </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <!-- The full-screen menu-bar overlay (item 3). Set to 0 to fall back to SimpleFullscreen. -->
+    <key>XSP_OVERLAY</key><string>1</string>
+  </dict>
   <key>LimitLoadToSessionType</key><string>Aqua</string>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>

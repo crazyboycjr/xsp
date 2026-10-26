@@ -10,6 +10,12 @@ IDENTITY="Local Code Signing"
 
 PATH="$HOME/.cargo/bin:$PATH" cargo build --release
 mkdir -p "$HOME/.local/bin"
+
+# The window-overlay shim injected into each scratchpad (item 3). Ad-hoc signing is enough; it is
+# loaded by DYLD_INSERT_LIBRARIES, which the non-hardened wrapper binary allows.
+clang -dynamiclib -fobjc-arc -O2 -o "$HOME/.local/bin/xsp-overlay.dylib" overlay.c
+codesign --force --sign - "$HOME/.local/bin/xsp-overlay.dylib"
+
 cp target/release/xsp "$BIN.new"
 if [ -f "$KEYCHAIN" ]; then
     security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"

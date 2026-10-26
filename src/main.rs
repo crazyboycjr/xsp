@@ -13,6 +13,7 @@ use std::cell::RefCell;
 use std::ffi::c_void;
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::process::Command;
 use std::ptr::{null, null_mut, NonNull};
 use std::time::Duration;
 
@@ -33,6 +34,12 @@ use sys::*;
 const PADS: usize = 3;
 const KEYS: [u32; PADS] = [kVK_F1, kVK_F3, kVK_F4];
 const ALACRITTY: &str = "/Applications/Nix Apps/Alacritty.app";
+const LSREGISTER: &str =
+    "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
+/// The shared self-signed identity and its keychain, so a wrapper's permission grants survive the
+/// re-signing that each binary refresh needs (TCC keys on the identifier and leaf certificate).
+const SIGNING_IDENTITY: &str = "Local Code Signing";
+const SIGNING_KEYCHAIN_PASSWORD: &str = "";
 
 fn log(message: &str) {
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
@@ -222,9 +229,19 @@ fn current_desktop() -> Result<usize, String> {
 }
 
 // ---------------------------------------------------------------------------------------------
-// The scratchpad apps: Alacritty under its own bundle id each, so LaunchServices can hide, show
-// and activate exactly that one. They stay regular apps because macOS refuses to hide an
-// LSUIElement app for anyone but the app itself.
+// The scratchpad apps: Alacritty under its own bundle id each, in a wrapper the daemon keeps in
+// ~/Library/Application Support/xsp. Each wrapper is an LSUIElement accessory app (once xsp is
+// trusted), so it is out of the Dock and Cmd+Tab, and it is signed with the shared identity so its
+// grants (App Management, folder access) survive the re-signing a binary refresh needs.
+
+/// Whether a scratchpad N has a live process. A running wrapper is never rewritten, because
+/// re-signing rewrites its executable and macOS would kill the running copy.
+fn pad_running(n: usize) -> bool {
+    NSRunningApplication::runningApplicationsWithBundleIdentifier(&NSString::from_str(&bundle_id(n)))
+        .to_vec()
+        .iter()
+        .any(|a| !a.isTerminated())
+}
 
 /// Copies `from` over `to` when they differ, through a rename so a running copy keeps its file.
 fn refresh(from: &str, to: &str) -> std::io::Result<()> {
@@ -238,10 +255,43 @@ fn refresh(from: &str, to: &str) -> std::io::Result<()> {
     std::fs::rename(&temp, to)
 }
 
-/// Builds or updates a wrapper bundle. Alacritty's binary must be a copy, refreshed when nix
-/// replaces it: LaunchServices resolves a symlink, and the process then checks in as Alacritty.
+/// Signs the wrapper with the shared identity and the stable identifier `local.xsp.scratch-N`, with
+/// no hardened runtime so the overlay dylib can still be injected. The grant is keyed on that
+/// identifier and the certificate, so it survives every re-sign. Without the keychain it is left
+/// ad-hoc signed and its grants will not persist.
+fn sign_bundle(n: usize) {
+    let keychain = format!("{}/Library/Keychains/signing.keychain-db", home());
+    if !std::path::Path::new(&keychain).exists() {
+        log(&format!("no {keychain}; scratch-{n} stays ad-hoc signed and its grants will not persist"));
+        return;
+    }
+    let _ = Command::new("security").args(["unlock-keychain", "-p", SIGNING_KEYCHAIN_PASSWORD, &keychain]).status();
+    let signed = Command::new("codesign")
+        .args(["--force", "--keychain", &keychain, "--sign", SIGNING_IDENTITY, "--identifier", &bundle_id(n), &bundle_path(n)])
+        .status();
+    if !matches!(signed, Ok(status) if status.success()) {
+        log(&format!("could not sign scratch-{n}: {signed:?}"));
+    }
+}
+
+/// Refreshes the wrapper's LaunchServices record so its LSUIElement flag matches the plist. Editing
+/// the plist in place does not update the record on its own, which is why a fresh spawn would
+/// otherwise keep a Dock icon.
+fn register_bundle(n: usize) {
+    let _ = Command::new(LSREGISTER).arg("-f").arg(bundle_path(n)).status();
+}
+
+/// Builds or updates a wrapper bundle, then signs and re-registers it. Alacritty's binary must be a
+/// copy, refreshed when nix replaces it: LaunchServices resolves a symlink, and the process then
+/// checks in as Alacritty itself.
 #[allow(deprecated)]
 fn prepare_bundle(n: usize) -> Result<(), String> {
+    // A running wrapper must not be rewritten (re-signing would kill it). Still refresh its
+    // LaunchServices record, so the next reopen after the user closes it comes up accessory.
+    if pad_running(n) {
+        register_bundle(n);
+        return Ok(());
+    }
     let contents = format!("{}/Contents", bundle_path(n));
     let fail = |e: std::io::Error| format!("scratch-{n} bundle: {e}");
     std::fs::create_dir_all(format!("{contents}/MacOS")).map_err(fail)?;
@@ -258,15 +308,16 @@ fn prepare_bundle(n: usize) -> Result<(), String> {
     info.insert(ns_string!("CFBundleIdentifier"), &NSString::from_str(&bundle_id(n)));
     info.insert(ns_string!("CFBundleName"), &name);
     info.insert(ns_string!("CFBundleDisplayName"), &name);
-    // Out of the Dock and Cmd+Tab, but only once we can hide an accessory app (see the module note)
+    // Out of the Dock and Cmd+Tab, but only once xsp can hide an accessory app (see the module note)
     if trusted() {
         info.insert(ns_string!("LSUIElement"), &NSNumber::new_bool(true));
     }
     let target = NSString::from_str(&format!("{contents}/Info.plist"));
-    let current = unsafe { NSDictionary::<NSString, AnyObject>::dictionaryWithContentsOfFile(&target) };
-    if !current.is_some_and(|c| c.isEqualToDictionary(&info)) && !unsafe { info.writeToFile_atomically(&target, true) } {
+    if !unsafe { info.writeToFile_atomically(&target, true) } {
         return Err(format!("cannot write {target}"));
     }
+    sign_bundle(n);
+    register_bundle(n);
     Ok(())
 }
 
@@ -305,19 +356,36 @@ fn pads() -> Vec<Option<Pad>> {
                 .min_by(|a, b| launched(a).total_cmp(&launched(b)))?;
             let pid = app.processIdentifier();
             let accessory = app.activationPolicy() == NSApplicationActivationPolicy::Accessory;
+            // Not filtered by layer: in overlay mode the terminal sits above the menu-bar level
             let mut windows: Vec<Window> =
-                all.iter().filter(|w| w.pid == pid && w.layer == 0 && w.width >= 100.0 && w.height >= 100.0).copied().collect();
+                all.iter().filter(|w| w.pid == pid && w.width >= 100.0 && w.height >= 100.0).copied().collect();
             windows.sort_by(|a, b| (b.width * b.height).total_cmp(&(a.width * a.height)));
             Some(Pad { n, hidden: app.isHidden(), accessory, app, pid, windows })
         })
         .collect()
 }
 
+/// The overlay shim, if it is enabled and built. XSP_OVERLAY=0 in the LaunchAgent plist turns it
+/// off and the scratchpads fall back to Alacritty's own SimpleFullscreen.
+fn overlay_dylib() -> Option<String> {
+    if std::env::var("XSP_OVERLAY").as_deref() == Ok("0") {
+        return None;
+    }
+    let path = format!("{}/.local/bin/xsp-overlay.dylib", home());
+    std::path::Path::new(&path).exists().then_some(path)
+}
+
 /// Opens the scratchpad through LaunchServices: a launch when it is not running; otherwise a
-/// reopen, which unhides it, brings back a minimised window, and activates it.
-fn open(n: usize, arguments: &[&str]) {
+/// reopen, which unhides it, brings back a minimised window, and activates it. On a launch, `inject`
+/// names a dylib to load through DYLD_INSERT_LIBRARIES; a reopen ignores arguments and environment.
+fn open(n: usize, arguments: &[&str], inject: Option<&str>) {
     let config = NSWorkspaceOpenConfiguration::configuration();
     config.setArguments(&NSArray::from_retained_slice(&arguments.iter().map(|a| NSString::from_str(a)).collect::<Vec<_>>()));
+    if let Some(dylib) = inject {
+        let environment = NSMutableDictionary::<NSString, NSString>::new();
+        environment.insert(ns_string!("DYLD_INSERT_LIBRARIES"), &NSString::from_str(dylib));
+        config.setEnvironment(&environment);
+    }
     config.setActivates(true);
     config.setAddsToRecentItems(false);
     config.setPromptsUserIfNeeded(false);
@@ -332,7 +400,17 @@ fn open(n: usize, arguments: &[&str]) {
 
 fn spawn(n: usize) -> Result<(), String> {
     prepare_bundle(n)?;
-    open(n, &["--title", &format!("scratch-{n}")]);
+    let title = format!("scratch-{n}");
+    match overlay_dylib() {
+        // Windowed + no decorations, so Alacritty never switches presentation options (which is what
+        // animates the menu bar); the dylib raises the window over the whole screen.
+        Some(dylib) => open(
+            n,
+            &["--title", &title, "-o", r#"window.startup_mode="Windowed""#, "-o", r#"window.decorations="None""#],
+            Some(&dylib),
+        ),
+        None => open(n, &["--title", &title], None),
+    }
     Ok(())
 }
 
@@ -460,7 +538,7 @@ fn show_here(pad: Pad, others: Vec<Pad>) -> String {
     // ZeroSpace's moves land asynchronously; activating before they do would switch Spaces
     let pid = pad.pid;
     after_ms(if away.is_empty() { 0 } else { 50 }, move || {
-        open(n, &[]);
+        open(n, &[], None);
         when(move || front_pid() == pid, 1000, move |_| hide(others, "showed another"));
     });
     format!("showed scratch-{n} ({report})")
