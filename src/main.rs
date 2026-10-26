@@ -10,6 +10,7 @@
 mod sys;
 
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::ffi::c_void;
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -244,15 +245,29 @@ fn pad_running(n: usize) -> bool {
 }
 
 /// Copies `from` over `to` when they differ, through a rename so a running copy keeps its file.
-fn refresh(from: &str, to: &str) -> std::io::Result<()> {
+/// Returns whether it changed the file, so the caller re-signs only when something actually moved.
+fn refresh(from: &str, to: &str) -> std::io::Result<bool> {
     let bytes = std::fs::read(from)?;
     if std::fs::read(to).is_ok_and(|old| old == bytes) {
-        return Ok(());
+        return Ok(false);
     }
     let temp = format!("{to}.new");
     std::fs::write(&temp, &bytes)?;
     std::fs::set_permissions(&temp, std::os::unix::fs::PermissionsExt::from_mode(0o755))?;
-    std::fs::rename(&temp, to)
+    std::fs::rename(&temp, to)?;
+    Ok(true)
+}
+
+/// Whether the wrapper already carries our signature, so an unchanged bundle is not re-signed (a
+/// re-sign rewrites the executable, which would kill a copy that is still launching).
+fn signed_correctly(n: usize) -> bool {
+    match Command::new("/usr/bin/codesign").args(["-dvvv", &bundle_path(n)]).output() {
+        Ok(output) => {
+            let info = String::from_utf8_lossy(&output.stderr);
+            info.contains(&format!("Identifier={}", bundle_id(n))) && info.contains(&format!("Authority={SIGNING_IDENTITY}"))
+        }
+        Err(_) => false,
+    }
 }
 
 /// Signs the wrapper with the shared identity and the stable identifier `local.xsp.scratch-N`, with
@@ -296,8 +311,8 @@ fn prepare_bundle(n: usize) -> Result<(), String> {
     let fail = |e: std::io::Error| format!("scratch-{n} bundle: {e}");
     std::fs::create_dir_all(format!("{contents}/MacOS")).map_err(fail)?;
     std::fs::create_dir_all(format!("{contents}/Resources")).map_err(fail)?;
-    refresh(&format!("{ALACRITTY}/Contents/MacOS/alacritty"), &format!("{contents}/MacOS/alacritty")).map_err(fail)?;
-    refresh(&format!("{ALACRITTY}/Contents/Resources/alacritty.icns"), &format!("{contents}/Resources/alacritty.icns"))
+    let binary_changed = refresh(&format!("{ALACRITTY}/Contents/MacOS/alacritty"), &format!("{contents}/MacOS/alacritty")).map_err(fail)?;
+    let icon_changed = refresh(&format!("{ALACRITTY}/Contents/Resources/alacritty.icns"), &format!("{contents}/Resources/alacritty.icns"))
         .map_err(fail)?;
 
     let source = NSString::from_str(&format!("{ALACRITTY}/Contents/Info.plist"));
@@ -313,10 +328,15 @@ fn prepare_bundle(n: usize) -> Result<(), String> {
         info.insert(ns_string!("LSUIElement"), &NSNumber::new_bool(true));
     }
     let target = NSString::from_str(&format!("{contents}/Info.plist"));
-    if !unsafe { info.writeToFile_atomically(&target, true) } {
+    let plist_changed = !unsafe { NSDictionary::<NSString, AnyObject>::dictionaryWithContentsOfFile(&target) }.is_some_and(|c| c.isEqualToDictionary(&info));
+    if plist_changed && !unsafe { info.writeToFile_atomically(&target, true) } {
         return Err(format!("cannot write {target}"));
     }
-    sign_bundle(n);
+    // Sign only on a real change or when not yet signed by us: a needless re-sign rewrites the
+    // executable and can invalidate a copy that is mid-launch, which macOS then kills.
+    if binary_changed || icon_changed || plist_changed || !signed_correctly(n) {
+        sign_bundle(n);
+    }
     register_bundle(n);
     Ok(())
 }
@@ -325,7 +345,6 @@ struct Pad {
     n: usize,
     app: Retained<NSRunningApplication>,
     pid: i32,
-    hidden: bool,
     /// True when it launched as an accessory app (no Dock icon): a running pad from before the
     /// Accessibility grant is still a regular app until it is closed and reopened.
     accessory: bool,
@@ -334,8 +353,17 @@ struct Pad {
 }
 
 impl Pad {
+    /// Shown on the current Space: any of its windows is on screen. Not read from the largest
+    /// window or from isHidden, because the overlay can make a helper window full-screen too and an
+    /// accessory app does not report isHidden reliably.
     fn shown_here(&self) -> bool {
-        !self.hidden && self.windows.first().is_some_and(|w| w.onscreen)
+        self.windows.iter().any(|w| w.onscreen)
+    }
+
+    /// The terminal window (the one `move` acts on): the biggest window that is on a real Space, so
+    /// never a helper window, which sits on no Space (id 0).
+    fn terminal(&self) -> Option<&Window> {
+        self.windows.iter().filter(|w| space_of(w.id) != 0).max_by(|a, b| (a.width * a.height).total_cmp(&(b.width * b.height)))
     }
 }
 
@@ -360,7 +388,7 @@ fn pads() -> Vec<Option<Pad>> {
             let mut windows: Vec<Window> =
                 all.iter().filter(|w| w.pid == pid && w.width >= 100.0 && w.height >= 100.0).copied().collect();
             windows.sort_by(|a, b| (b.width * b.height).total_cmp(&(a.width * a.height)));
-            Some(Pad { n, hidden: app.isHidden(), accessory, app, pid, windows })
+            Some(Pad { n, accessory, app, pid, windows })
         })
         .collect()
 }
@@ -420,6 +448,9 @@ fn spawn(n: usize) -> Result<(), String> {
 thread_local! {
     /// Apps by when they were last active, most recent first; scratchpads and xsp left out.
     static RECENT: RefCell<Vec<i32>> = const { RefCell::new(Vec::new()) };
+    /// Pads whose launch is in flight: a process that has not yet joined runningApplications, so a
+    /// second key-press must not start a duplicate or rebuild the wrapper under it.
+    static SPAWNING: RefCell<HashSet<usize>> = RefCell::new(HashSet::new());
 }
 
 fn front_pid() -> i32 {
@@ -495,17 +526,29 @@ fn toggle(n: usize) -> String {
     let pad = all[n].take();
     let others: Vec<Pad> = all.into_iter().flatten().filter(Pad::shown_here).collect();
     let Some(pad) = pad else {
+        if SPAWNING.with_borrow(|s| s.contains(&n)) {
+            return format!("scratch-{n} is still starting");
+        }
         if let Err(e) = spawn(n) {
             log(&e);
             return e;
         }
-        // Alacritty activates itself once its window is up; the others hide after that
+        SPAWNING.with_borrow_mut(|s| {
+            s.insert(n);
+        });
+        // Alacritty activates itself once its window is up; the others hide after that, and the pad
+        // leaves the in-flight set once its process is really up.
         let bundle = bundle_id(n);
         let is_front = move || {
             let front = NSWorkspace::sharedWorkspace().frontmostApplication();
             front.and_then(|a| a.bundleIdentifier()).is_some_and(|id| id.to_string() == bundle)
         };
-        when(is_front, 3000, move |_| hide(others, "spawned another"));
+        when(is_front, 3000, move |_| {
+            SPAWNING.with_borrow_mut(|s| {
+                s.remove(&n);
+            });
+            hide(others, "spawned another");
+        });
         return format!("spawned scratch-{n}");
     };
     if pad.windows.is_empty() {
@@ -523,21 +566,19 @@ fn toggle(n: usize) -> String {
 fn show_here(pad: Pad, others: Vec<Pad>) -> String {
     let n = pad.n;
     let here = active_space();
-    let away: Vec<u32> = pad.windows.iter().map(|w| w.id).filter(|&w| ![0, here].contains(&space_of(w))).collect();
+    // Only the terminal window needs moving, and only when it is on another Space; its helper
+    // windows sit on no Space and are left alone.
+    let away = pad.terminal().filter(|w| space_of(w.id) != here).map(|w| w.id);
     let mut report = String::from("already on this Space");
-    if !away.is_empty() {
+    if let Some(wid) = away {
         report = match current_desktop() {
-            Ok(desktop) => away
-                .iter()
-                .map(|w| zerospace(&format!("move {w} {desktop}")).unwrap_or_else(|e| e))
-                .collect::<Vec<_>>()
-                .join("; "),
+            Ok(desktop) => zerospace(&format!("move {wid} {desktop}")).unwrap_or_else(|e| e),
             Err(e) => format!("{e}; it stays on its own Space, and macOS switches there"),
         };
     }
     // ZeroSpace's moves land asynchronously; activating before they do would switch Spaces
     let pid = pad.pid;
-    after_ms(if away.is_empty() { 0 } else { 50 }, move || {
+    after_ms(if away.is_some() { 50 } else { 0 }, move || {
         open(n, &[], None);
         when(move || front_pid() == pid, 1000, move |_| hide(others, "showed another"));
     });

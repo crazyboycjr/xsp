@@ -16,8 +16,17 @@ static id nsstr(const char *s) {
     return ((id (*)(Class, SEL, const char *))objc_msgSend)(objc_getClass("NSString"), sel_registerName("stringWithUTF8String:"), s);
 }
 
+// winit keeps auxiliary windows besides the terminal; only the terminal carries the title we set
+// with --title, so a window with an empty title is a helper and must be left at its own size.
+static int is_terminal(id window) {
+    id title = ((id (*)(id, SEL))objc_msgSend)(window, sel_registerName("title"));
+    return title && ((unsigned long (*)(id, SEL))objc_msgSend)(title, sel_registerName("length")) > 0;
+}
+
 static void cover_screen(id window) {
-    if (!window) return;
+    if (!window || !is_terminal(window)) return;
+    // No scale/fade when the window is hidden or shown, so toggling is instant like on Linux.
+    ((void (*)(id, SEL, long))objc_msgSend)(window, sel_registerName("setAnimationBehavior:"), 2); // NSWindowAnimationBehaviorNone
     ((void (*)(id, SEL, long))objc_msgSend)(window, sel_registerName("setLevel:"), 25); // above NSMainMenuWindowLevel (24)
     id screen = ((id (*)(id, SEL))objc_msgSend)(window, sel_registerName("screen"));
     if (!screen) return;
