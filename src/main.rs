@@ -13,7 +13,7 @@ use std::cell::RefCell;
 use std::ffi::c_void;
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::ptr::{null_mut, NonNull};
+use std::ptr::{null, null_mut, NonNull};
 use std::time::Duration;
 
 use block2::RcBlock;
@@ -146,6 +146,46 @@ fn active_space() -> u64 {
     unsafe { SLSGetActiveSpace(SLSMainConnectionID()) }
 }
 
+// ---------------------------------------------------------------------------------------------
+// Accessibility. Hiding an accessory (LSUIElement) app has to come from inside it, which macOS
+// does for us when xsp sets kAXHidden with the Accessibility right. Until the right is granted,
+// the wrappers stay regular apps and we hide them with NSRunningApplication.hide (see prepare_bundle
+// and hide); the moment it is granted, new wrappers launch as accessory apps and hiding switches
+// to kAXHidden. A LaunchServices reopen unhides either kind, so showing never needs the right.
+
+fn trusted() -> bool {
+    unsafe { AXIsProcessTrusted() }
+}
+
+/// Shows the one-time Accessibility prompt if the right is not granted yet.
+fn request_accessibility() {
+    unsafe {
+        let keys = [kAXTrustedCheckOptionPrompt];
+        let values = [kCFBooleanTrue];
+        let options = CFDictionaryCreate(null(), keys.as_ptr(), values.as_ptr(), 1,
+                                         &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+        AXIsProcessTrustedWithOptions(options);
+        if !options.is_null() {
+            CFRelease(options);
+        }
+    }
+}
+
+/// Hides an app by setting kAXHidden, the way Cmd+H does, which works on an accessory app that
+/// NSRunningApplication.hide refuses. Needs the Accessibility right.
+fn ax_hide(pid: i32) -> bool {
+    unsafe {
+        let element = AXUIElementCreateApplication(pid);
+        if element.is_null() {
+            return false;
+        }
+        let attribute = NSString::from_str("AXHidden");
+        let result = AXUIElementSetAttributeValue(element, Retained::as_ptr(&attribute) as *const c_void, kCFBooleanTrue);
+        CFRelease(element);
+        result == 0
+    }
+}
+
 fn space_of(wid: u32) -> u64 {
     let windows = NSArray::from_retained_slice(&[NSNumber::new_u32(wid)]);
     let raw = unsafe { SLSCopySpacesForWindows(SLSMainConnectionID(), 0x7, Retained::as_ptr(&windows) as *const c_void) };
@@ -218,6 +258,10 @@ fn prepare_bundle(n: usize) -> Result<(), String> {
     info.insert(ns_string!("CFBundleIdentifier"), &NSString::from_str(&bundle_id(n)));
     info.insert(ns_string!("CFBundleName"), &name);
     info.insert(ns_string!("CFBundleDisplayName"), &name);
+    // Out of the Dock and Cmd+Tab, but only once we can hide an accessory app (see the module note)
+    if trusted() {
+        info.insert(ns_string!("LSUIElement"), &NSNumber::new_bool(true));
+    }
     let target = NSString::from_str(&format!("{contents}/Info.plist"));
     let current = unsafe { NSDictionary::<NSString, AnyObject>::dictionaryWithContentsOfFile(&target) };
     if !current.is_some_and(|c| c.isEqualToDictionary(&info)) && !unsafe { info.writeToFile_atomically(&target, true) } {
@@ -231,6 +275,9 @@ struct Pad {
     app: Retained<NSRunningApplication>,
     pid: i32,
     hidden: bool,
+    /// True when it launched as an accessory app (no Dock icon): a running pad from before the
+    /// Accessibility grant is still a regular app until it is closed and reopened.
+    accessory: bool,
     /// Its windows, the terminal (the largest) first.
     windows: Vec<Window>,
 }
@@ -257,10 +304,11 @@ fn pads() -> Vec<Option<Pad>> {
                 .filter(|a| !a.isTerminated())
                 .min_by(|a, b| launched(a).total_cmp(&launched(b)))?;
             let pid = app.processIdentifier();
+            let accessory = app.activationPolicy() == NSApplicationActivationPolicy::Accessory;
             let mut windows: Vec<Window> =
                 all.iter().filter(|w| w.pid == pid && w.layer == 0 && w.width >= 100.0 && w.height >= 100.0).copied().collect();
             windows.sort_by(|a, b| (b.width * b.height).total_cmp(&(a.width * a.height)));
-            Some(Pad { n, hidden: app.isHidden(), app, pid, windows })
+            Some(Pad { n, hidden: app.isHidden(), accessory, app, pid, windows })
         })
         .collect()
 }
@@ -351,8 +399,12 @@ fn hide(pads: Vec<Pad>, why: &str) {
         if !moved {
             log("the focus did not leave the scratchpad; hiding anyway");
         }
+        let ax = trusted();
         for pad in &pads {
-            pad.app.hide();
+            let hidden = if ax { ax_hide(pad.pid) } else { pad.app.hide() };
+            if !hidden {
+                log(&format!("could not hide scratch-{} (pid {})", pad.n, pad.pid));
+            }
         }
     });
 }
@@ -416,12 +468,13 @@ fn show_here(pad: Pad, others: Vec<Pad>) -> String {
 
 fn status() -> String {
     let front = NSWorkspace::sharedWorkspace().frontmostApplication();
+    let here = active_space();
     let mut lines = vec![format!(
-        "space {} (desktop {}), focus on {} (pid {})",
-        active_space(),
+        "space {here} (desktop {}), focus on {} (pid {}), accessibility {}",
         current_desktop().map_or_else(|e| format!("? {e}"), |d| d.to_string()),
         front.as_deref().map(name).unwrap_or_default(),
         front.as_ref().map_or(0, |a| a.processIdentifier()),
+        if trusted() { "trusted" } else { "not trusted" },
     )];
     for (n, pad) in pads().iter().enumerate() {
         lines.push(match pad {
@@ -432,8 +485,17 @@ fn status() -> String {
                     .iter()
                     .map(|w| format!("window {} on space {}, {}", w.id, space_of(w.id), if w.onscreen { "on screen" } else { "off screen" }))
                     .collect();
-                let state = if p.shown_here() { "shown here" } else if p.hidden { "hidden" } else { "shown elsewhere" };
-                format!("scratch-{n}: pid {}, {state}, {}", p.pid, if windows.is_empty() { "no window".into() } else { windows.join("; ") })
+                // Read the state from the window's Space and visibility, not isHidden, which an
+                // accessory app does not report reliably
+                let state = if p.shown_here() {
+                    "shown here"
+                } else if p.windows.iter().any(|w| [0, here].contains(&space_of(w.id))) {
+                    "hidden"
+                } else {
+                    "on another space"
+                };
+                let kind = if p.accessory { "accessory" } else { "regular" };
+                format!("scratch-{n}: pid {}, {kind}, {state}, {}", p.pid, if windows.is_empty() { "no window".into() } else { windows.join("; ") })
             }
         });
     }
@@ -536,6 +598,12 @@ fn daemon() {
     let mtm = MainThreadMarker::new().expect("main thread");
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+    if trusted() {
+        log("accessibility: trusted, scratchpads are accessory apps");
+    } else {
+        log("accessibility: not trusted, showing the prompt once (scratchpads stay regular apps until granted)");
+        request_accessibility();
+    }
     for n in 0..PADS {
         if let Err(e) = prepare_bundle(n) {
             log(&e);

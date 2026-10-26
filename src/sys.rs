@@ -60,6 +60,29 @@ extern "C" {
     pub fn SLSCopySpacesForWindows(cid: i32, mask: i32, windows: *const c_void) -> *mut c_void;
 }
 
+pub type AXUIElementRef = *const c_void;
+
+#[link(name = "CoreFoundation", kind = "framework")]
+extern "C" {
+    pub static kCFTypeDictionaryKeyCallBacks: c_void;
+    pub static kCFTypeDictionaryValueCallBacks: c_void;
+    pub static kCFBooleanTrue: *const c_void;
+    pub fn CFRelease(cf: *const c_void);
+    pub fn CFDictionaryCreate(alloc: *const c_void, keys: *const *const c_void, values: *const *const c_void, count: isize,
+                              key_callbacks: *const c_void, value_callbacks: *const c_void) -> *const c_void;
+}
+
+// Accessibility. AXIsProcessTrusted and the element calls need no link-time constants: the
+// attribute and option names are plain CFStrings, which we pass as toll-free-bridged NSStrings.
+#[link(name = "ApplicationServices", kind = "framework")]
+extern "C" {
+    pub static kAXTrustedCheckOptionPrompt: *const c_void;
+    pub fn AXIsProcessTrusted() -> bool;
+    pub fn AXIsProcessTrustedWithOptions(options: *const c_void) -> bool;
+    pub fn AXUIElementCreateApplication(pid: i32) -> AXUIElementRef;
+    pub fn AXUIElementSetAttributeValue(element: AXUIElementRef, attribute: *const c_void, value: *const c_void) -> i32;
+}
+
 pub type DispatchWork = extern "C" fn(context: *mut c_void);
 
 extern "C" {
