@@ -25,8 +25,8 @@ and otherwise brings it to this desktop with the keyboard. Bringing up one pad
 puts away any other out on the same desktop.
 
 **Getting out of the way.** A pad that is out hides when you switch to another
-app on its desktop, by cmd+tab, alt+tab or a click, and the keyboard goes back
-to the app you were in. Leaving the desktop keeps the pad there.
+app on its desktop, by cmd+tab, alt+tab or a click, so the app you switched to
+comes forward. Leaving the desktop keeps the pad there.
 
 **Out of the Dock.** Each pad is Alacritty under its own bundle id,
 `xyz.crazyboycjr.xsp.scratch-N`, in an accessory app xsp keeps in

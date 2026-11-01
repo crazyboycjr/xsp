@@ -143,7 +143,7 @@
   <div class="section-head">
     <p class="kicker">Behaviour</p>
     <h2>The way xmonad&rsquo;s exclusive scratchpads behave</h2>
-    <p>xsp follows xmonad&rsquo;s <code>ExclusiveScratchpads</code>, and adds what a Mac needs, since apps there can take the focus on their own.</p>
+    <p>xsp follows xmonad&rsquo;s <code>ExclusiveScratchpads</code>, with one rule added for the Mac: switching to another app puts the pad away.</p>
   </div>
   <div class="rule-grid">
     <div class="card rule">
@@ -160,7 +160,7 @@
     </div>
     <div class="card rule">
       <h3>Another pad&rsquo;s key</h3>
-      <p>brings that pad up and puts the first away: only one is out at a time.</p>
+      <p>brings that pad up and puts the first away: only one is out on a desktop at a time.</p>
     </div>
     <div class="card rule">
       <h3>Switching apps</h3>
@@ -229,7 +229,7 @@ xsp status     # each pad's process, windows and desktop</code></pre></div>
   <div class="section-head">
     <p class="kicker">Install</p>
     <h2>Build it on your Mac</h2>
-    <p>xsp needs macOS 27; it has been tested on macOS 27.0.1 on Apple Silicon. It works with Alacritty from its release, in <code>/Applications</code> or <code>~/Applications</code>, or from nix-darwin, and with <a href="https://crazyboycjr.github.io/zerospace/">ZeroSpace</a> running, though it does not need it. Building takes Rust and the Xcode Command Line Tools.</p>
+    <p>xsp is made for macOS 27, and has been tested on macOS 27.0.1 on Apple Silicon. It works with Alacritty from its release, in <code>/Applications</code> or <code>~/Applications</code>, or from nix-darwin, and with <a href="https://crazyboycjr.github.io/zerospace/">ZeroSpace</a> running, though it does not need it. Building takes Rust and the Xcode Command Line Tools.</p>
   </div>
   <div class="install-grid">
     <div class="card install-item">

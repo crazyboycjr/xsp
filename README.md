@@ -67,15 +67,15 @@ installs no event tap. On an Apple keyboard the top row works the brightness
 and the like until you turn on "Use F1, F2, etc. keys as standard function
 keys" in System Settings, Keyboard; until then, hold <kbd>fn</kbd> with the key.
 
-Each key behaves the way xmonad's `ExclusiveScratchpads` do, with what a Mac
-adds, since apps there can take the focus on their own:
+Each key behaves the way xmonad's `ExclusiveScratchpads` do, with one rule
+added for the Mac: switching to another app puts the pad away.
 
 | When you | xsp |
 | :--- | :--- |
 | press a pad's key for the first time | starts the pad, which comes up in front with the keyboard |
 | press the key of the pad that is out | puts it away and gives the keyboard back to the app you were in |
 | press the key of a pad that is away, hidden or still out on another desktop | brings it to the desktop you are on, in front |
-| press another pad's key | brings that pad up and puts the first away |
+| press another pad's key | brings that pad up and puts the first away, so only one is out on a desktop at a time |
 | switch to another app on the same desktop, by a click or with <kbd>cmd</kbd>&nbsp;<kbd>tab</kbd> or <kbd>alt</kbd>&nbsp;<kbd>tab</kbd> | puts the pad away, so the windows under it come forward |
 | leave the desktop | keeps the pad out there, ready for when you come back |
 
@@ -120,8 +120,8 @@ keeps the permissions you give it. A running pad is never rewritten.
 
 ## Install
 
-xsp needs macOS 27; it has been tested on macOS 27.0.1 on Apple Silicon. It
-needs Alacritty, which it finds in `/Applications` or `~/Applications`, where
+xsp is made for macOS 27, and has been tested on macOS 27.0.1 on Apple Silicon.
+It needs Alacritty, which it finds in `/Applications` or `~/Applications`, where
 Alacritty's release goes, or in `/Applications/Nix Apps`, where nix-darwin puts
 it; for anywhere else, set `XSP_ALACRITTY` to the app's path when you build.
 [ZeroSpace](https://github.com/crazyboycjr/zerospace) is optional: with it
