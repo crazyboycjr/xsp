@@ -34,13 +34,31 @@ use sys::*;
 
 const PADS: usize = 3;
 const KEYS: [u32; PADS] = [kVK_F1, kVK_F3, kVK_F4];
-const ALACRITTY: &str = "/Applications/Nix Apps/Alacritty.app";
+/// The pad wrappers' bundle ids are `<prefix>.scratch-N`.
+const BUNDLE_PREFIX: &str = "xyz.crazyboycjr.xsp";
 const LSREGISTER: &str =
     "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
-/// The shared self-signed identity and its keychain, so a wrapper's permission grants survive the
-/// re-signing that each binary refresh needs (TCC keys on the identifier and leaf certificate).
-const SIGNING_IDENTITY: &str = "Local Code Signing";
-const SIGNING_KEYCHAIN_PASSWORD: &str = "";
+
+/// Where Alacritty is installed: XSP_ALACRITTY, or the first of the usual places that exists.
+fn alacritty_app() -> String {
+    if let Some(path) = std::env::var("XSP_ALACRITTY").ok().filter(|p| !p.is_empty()) {
+        return path;
+    }
+    let candidates = [
+        "/Applications/Alacritty.app".to_string(),
+        format!("{}/Applications/Alacritty.app", home()),
+        "/Applications/Nix Apps/Alacritty.app".to_string(),
+    ];
+    candidates.iter().find(|p| std::path::Path::new(p).exists()).unwrap_or(&candidates[0]).clone()
+}
+
+/// The identity the pad wrappers are signed with: CODESIGN_IDENTITY, ad hoc ("-") by default. A
+/// real identity keeps each wrapper's permission grants across the re-signing that every binary
+/// refresh needs, because TCC keys on the identifier and the leaf certificate; an ad-hoc signature
+/// changes with the binary, and the grants go with it.
+fn signing_identity() -> String {
+    std::env::var("CODESIGN_IDENTITY").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "-".into())
+}
 
 fn log(message: &str) {
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
@@ -64,7 +82,7 @@ fn bundle_path(n: usize) -> String {
 }
 
 fn bundle_id(n: usize) -> String {
-    format!("local.xsp.scratch-{n}")
+    format!("{BUNDLE_PREFIX}.scratch-{n}")
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -202,7 +220,7 @@ fn space_of(wid: u32) -> u64 {
 }
 
 // ---------------------------------------------------------------------------------------------
-// ZeroSpace, the user's desktop switcher, moves windows between Spaces for us: SkyLight's
+// ZeroSpace, an instant desktop switcher, moves windows between Spaces for us: SkyLight's
 // bridged window moves need the Accessibility grant it holds, so xsp itself needs none.
 
 fn zerospace(command: &str) -> Result<String, String> {
@@ -261,29 +279,30 @@ fn refresh(from: &str, to: &str) -> std::io::Result<bool> {
 /// Whether the wrapper already carries our signature, so an unchanged bundle is not re-signed (a
 /// re-sign rewrites the executable, which would kill a copy that is still launching).
 fn signed_correctly(n: usize) -> bool {
+    let identity = signing_identity();
+    let signer = if identity == "-" { "Signature=adhoc".to_string() } else { format!("Authority={identity}") };
     match Command::new("/usr/bin/codesign").args(["-dvvv", &bundle_path(n)]).output() {
         Ok(output) => {
             let info = String::from_utf8_lossy(&output.stderr);
-            info.contains(&format!("Identifier={}", bundle_id(n))) && info.contains(&format!("Authority={SIGNING_IDENTITY}"))
+            info.contains(&format!("Identifier={}", bundle_id(n))) && info.contains(&signer)
         }
         Err(_) => false,
     }
 }
 
-/// Signs the wrapper with the shared identity and the stable identifier `local.xsp.scratch-N`, with
-/// no hardened runtime so the overlay dylib can still be injected. The grant is keyed on that
-/// identifier and the certificate, so it survives every re-sign. Without the keychain it is left
-/// ad-hoc signed and its grants will not persist.
+/// Signs the wrapper with the identity and the stable identifier `<prefix>.scratch-N`, with no
+/// hardened runtime so the overlay dylib can still be injected. The identity may come from the
+/// keychain CODESIGN_KEYCHAIN, unlocked with CODESIGN_KEYCHAIN_PASSWORD when that is set.
 fn sign_bundle(n: usize) {
-    let keychain = format!("{}/Library/Keychains/signing.keychain-db", home());
-    if !std::path::Path::new(&keychain).exists() {
-        log(&format!("no {keychain}; scratch-{n} stays ad-hoc signed and its grants will not persist"));
-        return;
+    let mut args = vec!["--force".to_string()];
+    if let Some(keychain) = std::env::var("CODESIGN_KEYCHAIN").ok().filter(|k| !k.is_empty()) {
+        if let Some(password) = std::env::var("CODESIGN_KEYCHAIN_PASSWORD").ok().filter(|p| !p.is_empty()) {
+            let _ = Command::new("/usr/bin/security").args(["unlock-keychain", "-p", &password, &keychain]).status();
+        }
+        args.extend(["--keychain".to_string(), keychain]);
     }
-    let _ = Command::new("/usr/bin/security").args(["unlock-keychain", "-p", SIGNING_KEYCHAIN_PASSWORD, &keychain]).status();
-    let signed = Command::new("/usr/bin/codesign")
-        .args(["--force", "--keychain", &keychain, "--sign", SIGNING_IDENTITY, "--identifier", &bundle_id(n), &bundle_path(n)])
-        .status();
+    args.extend(["--sign".to_string(), signing_identity(), "--identifier".to_string(), bundle_id(n), bundle_path(n)]);
+    let signed = Command::new("/usr/bin/codesign").args(&args).status();
     if !matches!(signed, Ok(status) if status.success()) {
         log(&format!("could not sign scratch-{n}: {signed:?}"));
     }
@@ -297,7 +316,7 @@ fn register_bundle(n: usize) {
 }
 
 /// Builds or updates a wrapper bundle, then signs and re-registers it. Alacritty's binary must be a
-/// copy, refreshed when nix replaces it: LaunchServices resolves a symlink, and the process then
+/// copy, refreshed whenever Alacritty is updated: LaunchServices resolves a symlink, and the process then
 /// checks in as Alacritty itself.
 #[allow(deprecated)]
 fn prepare_bundle(n: usize) -> Result<(), String> {
@@ -311,11 +330,12 @@ fn prepare_bundle(n: usize) -> Result<(), String> {
     let fail = |e: std::io::Error| format!("scratch-{n} bundle: {e}");
     std::fs::create_dir_all(format!("{contents}/MacOS")).map_err(fail)?;
     std::fs::create_dir_all(format!("{contents}/Resources")).map_err(fail)?;
-    let binary_changed = refresh(&format!("{ALACRITTY}/Contents/MacOS/alacritty"), &format!("{contents}/MacOS/alacritty")).map_err(fail)?;
-    let icon_changed = refresh(&format!("{ALACRITTY}/Contents/Resources/alacritty.icns"), &format!("{contents}/Resources/alacritty.icns"))
+    let alacritty = alacritty_app();
+    let binary_changed = refresh(&format!("{alacritty}/Contents/MacOS/alacritty"), &format!("{contents}/MacOS/alacritty")).map_err(fail)?;
+    let icon_changed = refresh(&format!("{alacritty}/Contents/Resources/alacritty.icns"), &format!("{contents}/Resources/alacritty.icns"))
         .map_err(fail)?;
 
-    let source = NSString::from_str(&format!("{ALACRITTY}/Contents/Info.plist"));
+    let source = NSString::from_str(&format!("{alacritty}/Contents/Info.plist"));
     let Some(info) = (unsafe { NSMutableDictionary::<NSString, AnyObject>::dictionaryWithContentsOfFile(&source) }) else {
         return Err(format!("cannot read {source}"));
     };
@@ -460,7 +480,7 @@ thread_local! {
 }
 
 fn is_pad_app(app: &NSRunningApplication) -> bool {
-    app.bundleIdentifier().is_some_and(|id| id.to_string().starts_with("local.xsp."))
+    app.bundleIdentifier().is_some_and(|id| id.to_string().starts_with(&format!("{BUNDLE_PREFIX}.")))
 }
 
 /// Whether the app shows a window on this Space, the desktop included: Finder's desktop is on every
