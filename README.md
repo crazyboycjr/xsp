@@ -6,7 +6,8 @@
 </p>
 
 <p align="center">
-  xmonad's exclusive scratchpads for macOS 27: three Alacritty terminals on F1, F3 and F4.
+xmonad's exclusive scratchpads for macOS 27: three Alacritty terminals on F1, F3
+and F4.
 </p>
 
 <p align="center">
@@ -38,9 +39,8 @@ xmonad's keys and behaviour.
 
 The keys were the easy part. macOS 27 gives every ordinary app a place in the
 Dock and the app switcher, won't let one app hide another app that stays out of
-the Dock, and
-shows a window on whichever desktop it was left on rather than the one you are
-looking at. xsp works around each of these, and uses
+the Dock, and shows a window on whichever desktop it was left on rather than the
+one you are looking at. xsp works around each of these, and uses
 [ZeroSpace](https://github.com/crazyboycjr/zerospace), my instant desktop
 switcher, to bring a pad to the current desktop. Like ZeroSpace, I built it with
 an AI coding agent, Claude.
@@ -50,13 +50,13 @@ If you miss xmonad's scratchpads on a Mac, read on.
 ## What it is
 
 xsp is a small Rust program that runs as a login agent and keeps three
-scratchpads, pads for short, one key away. Each pad is Alacritty with your
-usual configuration, titled scratch-0, scratch-1 and scratch-2.
+scratchpads, pads for short, one key away. Each pad is Alacritty with your usual
+configuration, titled scratch-0, scratch-1 and scratch-2.
 
 - **One at a time.** Bringing up another pad puts the first away, as xmonad's
   exclusive scratchpads do.
-- **Here, not there.** A pad comes to the desktop you are on, through
-  ZeroSpace, rather than taking you to the desktop it was left on.
+- **Here, not there.** A pad comes to the desktop you are on, through ZeroSpace,
+  rather than taking you to the desktop it was left on.
 - **Out of the way.** The pads have no Dock icon and no place in the app
   switcher, and a pad steps aside when you switch to another app.
 - **Over everything.** A pad covers the whole screen, menu bar included, and
@@ -65,14 +65,14 @@ usual configuration, titled scratch-0, scratch-1 and scratch-2.
 ## Keys
 
 <kbd>f1</kbd> brings up scratch-0, <kbd>f3</kbd> scratch-1 and <kbd>f4</kbd>
-scratch-2. The keys are Carbon hot keys, so the app in front never sees them, and xsp
-installs no event tap. On an Apple keyboard the top row works the brightness
-and the like until you turn on "Use F1, F2, etc. keys as standard function
-keys" in System Settings, Keyboard, Keyboard Shortcuts, Function Keys; until
-then, hold <kbd>fn</kbd> with the key.
+scratch-2. The keys are Carbon hot keys, so the app in front never sees them,
+and xsp installs no event tap. On an Apple keyboard the top row works the
+brightness and the like until you turn on "Use F1, F2, etc. keys as standard
+function keys" in System Settings, Keyboard, Keyboard Shortcuts, Function Keys;
+until then, hold <kbd>fn</kbd> with the key.
 
-Each key behaves the way xmonad's `ExclusiveScratchpads` do, with one rule
-added for the Mac: switching to another app puts the pad away.
+Each key behaves the way xmonad's `ExclusiveScratchpads` do, with one rule added
+for the Mac: switching to another app puts the pad away.
 
 | When you | xsp |
 | :--- | :--- |
@@ -85,21 +85,21 @@ added for the Mac: switching to another app puts the pad away.
 
 ## How it works
 
-xsp runs as a login agent with no Dock icon. Each pad is Alacritty under its
-own bundle id, `xyz.crazyboycjr.xsp.scratch-N`, in a small app that xsp keeps in
+xsp runs as a login agent with no Dock icon. Each pad is Alacritty under its own
+bundle id, `xyz.crazyboycjr.xsp.scratch-N`, in a small app that xsp keeps in
 `~/Library/Application Support/xsp/`, so that macOS can hide, show and focus
 exactly that pad. macOS 27 stands in the way three times:
 
-- **Every ordinary app sits in the Dock and the app switcher.** Each pad's app is marked
-  as an accessory app (`LSUIElement`), so it has neither. Editing an app's
-  `Info.plist` does not change what LaunchServices knows about it, so xsp
+- **Every ordinary app sits in the Dock and the app switcher.** Each pad's app
+  is marked as an accessory app (`LSUIElement`), so it has neither. Editing an
+  app's `Info.plist` does not change what LaunchServices knows about it, so xsp
   registers the app again (`lsregister -f`) whenever it prepares it.
 - **One app cannot hide another app's accessory app.** The ordinary call,
   `NSRunningApplication`'s `hide`, refuses, so xsp hides a pad through
   Accessibility, setting `kAXHidden` the way cmd+H does, and shows it with a
-  LaunchServices reopen, which unhides and activates it and needs no
-  permission. Until Accessibility is granted, the pads stay ordinary Dock apps
-  and hide the ordinary way, so nothing breaks before the grant comes.
+  LaunchServices reopen, which unhides and activates it and needs no permission.
+  Until Accessibility is granted, the pads stay ordinary Dock apps and hide the
+  ordinary way, so nothing breaks before the grant comes.
 - **A window shows on the desktop it was left on.** The window server keeps a
   hidden window's desktop, so before showing a pad, xsp asks ZeroSpace, through
   its socket, to move the pad's window to the desktop you are on. Without
@@ -107,13 +107,14 @@ exactly that pad. macOS 27 stands in the way three times:
   switches to that desktop.
 
 A pad covers the whole screen, menu bar strip included. Alacritty's own
-SimpleFullscreen changes the presentation options and makes the menu bar
-animate at every show, so the pads start windowed and undecorated instead,
-whatever the Alacritty configuration says, with a small library, `xsp-overlay.dylib` (built from `overlay.c`), loaded into them
-alone through `DYLD_INSERT_LIBRARIES`. It raises the terminal window above the
-menu bar, sizes it to the screen and turns off its show and hide animation,
-again whenever the window becomes key or moves to another display. That works
-because the pads' apps are signed without the hardened runtime.
+SimpleFullscreen changes the presentation options and makes the menu bar animate
+at every show, so the pads start windowed and undecorated instead, whatever the
+Alacritty configuration says, with a small library, `xsp-overlay.dylib` (built
+from `overlay.c`), loaded into them alone through `DYLD_INSERT_LIBRARIES`. It
+raises the terminal window above the menu bar, sizes it to the screen and turns
+off its show and hide animation, again whenever the window becomes key or moves
+to another display. That works because the pads' apps are signed without the
+hardened runtime.
 
 Each pad's app holds a copy of Alacritty's binary rather than a link to it,
 since LaunchServices follows a link and the process would then check in as
@@ -152,10 +153,10 @@ SimpleFullscreen for example.
 ### Signing
 
 `build.sh` signs ad hoc unless told otherwise, and xsp signs the pads' apps the
-same way whenever Alacritty changes. That works, but an ad hoc signature
-changes with every build, and macOS then forgets xsp's Accessibility grant and
-each pad's own grants, such as access to your folders. A self-signed
-certificate keeps them; the one you made for ZeroSpace will do:
+same way whenever Alacritty changes. That works, but an ad hoc signature changes
+with every build, and macOS then forgets xsp's Accessibility grant and each
+pad's own grants, such as access to your folders. A self-signed certificate
+keeps them; the one you made for ZeroSpace will do:
 
 1. Open Keychain Access from Spotlight; since macOS 15 it is no longer in
    Utilities. Choose Keychain Access, Certificate Assistant, Create a
@@ -172,16 +173,16 @@ Because xsp signs its pads itself, `build.sh` hands the setting on to the login
 agent. The first signing asks whether codesign may use the key; choose Always
 Allow, since the agent signs again later on its own. If xsp was built ad hoc
 before, its old entry in System Settings, Privacy & Security, Accessibility
-stays ticked but no longer counts: remove it with the minus button and allow
-xsp again.
+stays ticked but no longer counts: remove it with the minus button and allow xsp
+again.
 
 To keep the setting, put the line `CODESIGN_IDENTITY="Local Code Signing"` in
 `signing.env` beside `build.sh`, which git ignores; `XSP_ALACRITTY` and
-`XSP_OVERLAY` can go there too. Where the login keychain is locked, as over
-ssh, keep the certificate in a keychain of its own, give the keychain's path in
-`CODESIGN_KEYCHAIN` and its password in `CODESIGN_KEYCHAIN_PASSWORD`. The agent's plist then holds that password in
-plain text; `build.sh` makes the file readable only by you, but give that
-keychain nothing besides the certificate.
+`XSP_OVERLAY` can go there too. Where the login keychain is locked, as over ssh,
+keep the certificate in a keychain of its own, give the keychain's path in
+`CODESIGN_KEYCHAIN` and its password in `CODESIGN_KEYCHAIN_PASSWORD`. The
+agent's plist then holds that password in plain text; `build.sh` makes the file
+readable only by you, but give that keychain nothing besides the certificate.
 
 ### Stop and remove
 
@@ -212,10 +213,12 @@ The agent itself is `xsp daemon`, which the login agent runs.
 - There are three pads, on F1, F3 and F4, set in the source; to change them,
   edit `KEYS` in `src/main.rs` and build again.
 - The pads are Alacritty and nothing else, and each keeps its own copy of it.
-- xsp reads the current desktop, and each window's, through private calls to
-  the window server, which a macOS update can change.
+- xsp reads the current desktop, and each window's, through private calls to the
+  window server, which a macOS update can change.
 - Without ZeroSpace, a pad left out on another desktop takes you there when you
   show it.
+- In a full-screen app, a pad on another desktop takes you there, since a window
+  cannot be moved into a full-screen app.
 - The overlay loads a library into the pads, which needs their apps signed
   without the hardened runtime.
 

@@ -68,7 +68,7 @@
     <img class="hero-icon" src="icon.svg" width="112" height="112" alt="xsp's icon: three stacked terminals, the front one lit, with a prompt">
     <p class="kicker">xsp 1.0, scratchpads for macOS 27</p>
     <h1>One key brings it;<br>the same key puts it away.</h1>
-    <p class="lede">xsp brings xmonad&rsquo;s scratchpads to macOS: three Alacritty terminals on <span class="nw"><kbd>f1</kbd>,</span> <kbd>f3</kbd> and <span class="nw"><kbd>f4</kbd>.</span> A key brings its pad up, the same key puts it away, and bringing up another puts the first away; with ZeroSpace running, a pad always comes to the desktop you are on.</p>
+    <p class="lede">xsp brings xmonad&rsquo;s scratchpads to macOS: three Alacritty terminals on <span class="nw"><kbd>f1</kbd>,</span> <kbd>f3</kbd> and <span class="nw"><kbd>f4</kbd>.</span> A key brings its pad up, the same key puts it away, and another key swaps it for its own pad; with ZeroSpace running, the pad comes to the desktop you are on.</p>
     <div class="actions">
       <a class="button primary" href="#install">Install xsp</a>
       <a class="button" href="https://github.com/crazyboycjr/xsp">Source on GitHub</a>
@@ -187,11 +187,11 @@
   <div class="walls">
     <div class="card wall">
       <h3>Every ordinary app sits in the Dock</h3>
-      <p>macOS gives every ordinary app a Dock icon and a place in the app switcher. Each pad&rsquo;s app is marked as an accessory app, <code>LSUIElement</code>, so it has neither, and after every change xsp registers the app again, so that LaunchServices sees the mark.</p>
+      <p>It gets a place in the app switcher too. Each pad&rsquo;s app is marked as an accessory app, <code>LSUIElement</code>, which has neither, and after every change xsp registers the app again, so that LaunchServices sees the mark.</p>
     </div>
     <div class="card wall">
-      <h3>One app can&rsquo;t hide another&rsquo;s accessory app</h3>
-      <p>The ordinary call refuses. So xsp hides a pad through Accessibility, setting <code>kAXHidden</code> the way <span class="nw"><kbd>cmd</kbd>&#8202;<kbd>h</kbd></span> does, and shows it with a LaunchServices reopen, which needs no permission. Until the permission is granted, pads stay ordinary Dock apps and hide the ordinary way.</p>
+      <h3>Hiding a pad takes Accessibility</h3>
+      <p>macOS refuses the ordinary call, <code>NSRunningApplication</code>&rsquo;s <code>hide</code>, when one app hides another&rsquo;s accessory app, so xsp hides a pad through Accessibility, setting <code>kAXHidden</code> the way <span class="nw"><kbd>cmd</kbd>&#8202;<kbd>h</kbd></span> does, and shows it with a LaunchServices reopen, which needs no permission. Until the permission is granted, pads stay ordinary Dock apps and hide the ordinary way.</p>
     </div>
     <div class="card wall">
       <h3>A window shows where it was left</h3>
@@ -237,22 +237,6 @@ cd xsp
 sh build.sh</code></pre></div>
       <p><code>build.sh</code> installs <code>~/.local/bin/xsp</code> and its overlay library, and starts the login agent <code>xyz.crazyboycjr.xsp</code>. Allow Accessibility when macOS asks. Alacritty anywhere else is found through <code>XSP_ALACRITTY</code>, set when you build.</p>
     </div>
-    <div class="card install-item install-wide">
-      <header><h3>Keep the permissions across builds</h3><button class="copy" type="button">Copy</button></header>
-      <div class="wide-body">
-        <div>
-          <div class="code"><pre><code>CODESIGN_IDENTITY="Local Code Signing" sh build.sh</code></pre></div>
-          <p>An ad hoc signature changes with every build, and macOS then asks for the permissions again. A self-signed certificate, made once, keeps them; the one you made for ZeroSpace will do. Because xsp signs its pads itself, <code>build.sh</code> passes these settings on to the login agent.</p>
-          <p>The first signing asks whether codesign may use the key; choose Always Allow, since the agent signs again later on its own. After an ad hoc build, xsp&rsquo;s old entry in Accessibility stays ticked but no longer counts: remove it with the minus button and allow xsp again.</p>
-        </div>
-        <ol>
-          <li>Open Keychain Access from Spotlight; since macOS 15 it is no longer in Utilities. Choose Keychain Access, Certificate Assistant, Create a Certificate.</li>
-          <li>Name it, say Local Code Signing, as a self-signed root of type Code Signing.</li>
-          <li>Build with its name, as shown, or put the line <code>CODESIGN_IDENTITY="Local Code Signing"</code> in <code>signing.env</code> beside <code>build.sh</code>.</li>
-          <li>Where the login keychain is locked, as over ssh, keep the certificate in a keychain of its own: give the keychain&rsquo;s path in <code>CODESIGN_KEYCHAIN</code> and its password in <code>CODESIGN_KEYCHAIN_PASSWORD</code>. The agent&rsquo;s plist then holds that password in plain text, readable only by you, so give the keychain nothing but the certificate.</li>
-        </ol>
-      </div>
-    </div>
     <div class="card install-item">
       <header><h3>Stop and remove</h3><button class="copy" type="button">Copy</button></header>
       <div class="code"><pre><code>launchctl bootout gui/$(id -u)/xyz.crazyboycjr.xsp
@@ -260,6 +244,24 @@ rm ~/Library/LaunchAgents/xyz.crazyboycjr.xsp.plist
 rm ~/.local/bin/xsp ~/.local/bin/xsp-overlay.dylib
 rm -r ~/Library/Application\ Support/xsp</code></pre></div>
       <p>Then take xsp out of System Settings, Privacy &amp; Security, Accessibility.</p>
+    </div>
+    <div class="card install-item install-wide">
+      <header><h3>Keep the permissions across builds</h3><button class="copy" type="button">Copy</button></header>
+      <div class="wide-body">
+        <div>
+          <div class="code"><pre><code>CODESIGN_IDENTITY="Local Code Signing" sh build.sh</code></pre></div>
+          <p>An ad hoc signature changes with every build, and macOS then asks for the permissions again. A self-signed certificate, made once, keeps them; the one you made for ZeroSpace will do. Because xsp signs its pads itself, <code>build.sh</code> passes these settings on to the login agent.</p>
+        </div>
+        <div>
+          <ol>
+            <li>Open Keychain Access from Spotlight; since macOS 15 it is no longer in Utilities. Choose Keychain Access, Certificate Assistant, Create a Certificate.</li>
+            <li>Name it, say Local Code Signing, as a self-signed root of type Code Signing.</li>
+            <li>Build with its name, as shown, or put the line <code>CODESIGN_IDENTITY="Local Code Signing"</code> in <code>signing.env</code> beside <code>build.sh</code>.</li>
+          </ol>
+          <p>The first signing asks whether codesign may use the key; choose Always Allow, since the agent signs again later on its own. After an ad hoc build, xsp&rsquo;s old entry in Accessibility stays ticked but no longer counts: remove it with the minus button and allow xsp again.</p>
+          <p>Where the login keychain is locked, as over ssh, keep the certificate in a keychain of its own: give the keychain&rsquo;s path in <code>CODESIGN_KEYCHAIN</code> and its password in <code>CODESIGN_KEYCHAIN_PASSWORD</code>. The agent&rsquo;s plist then holds that password in plain text, readable only by you, so give the keychain nothing but the certificate.</p>
+        </div>
+      </div>
     </div>
   </div>
 </section>
@@ -275,6 +277,7 @@ rm -r ~/Library/Application\ Support/xsp</code></pre></div>
     <li>The pads are Alacritty and nothing else, and each keeps its own copy of it.</li>
     <li>xsp reads the current desktop through private calls to the window server, which a macOS update can change.</li>
     <li>Without ZeroSpace, a pad left out on another desktop takes you there when you show it.</li>
+    <li>In a full-screen app, a pad on another desktop takes you there, since a window cannot be moved into a full-screen app.</li>
     <li>The overlay loads a library into the pads, which needs their apps signed without the hardened runtime.</li>
   </ul>
 </section>
