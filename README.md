@@ -151,6 +151,56 @@ macOS's default path, so add it to your `PATH` to type `xsp` alone.
 after that, and they open as your Alacritty configuration says, in its
 SimpleFullscreen for example.
 
+### Install with nix-darwin
+
+The repository is also a Nix flake for Apple Silicon. To try a build without
+installing anything:
+
+```sh
+nix build github:crazyboycjr/xsp
+```
+
+That gives `result/bin/xsp` and `result/lib/xsp-overlay.dylib`, where xsp finds
+it. To install it, add the flake to your nix-darwin configuration and turn on
+its module:
+
+```nix
+{
+  inputs.xsp.url = "github:crazyboycjr/xsp";
+  inputs.xsp.inputs.nixpkgs.follows = "nixpkgs";
+
+  outputs = { nix-darwin, xsp, ... }: {
+    darwinConfigurations.my-mac = nix-darwin.lib.darwinSystem {
+      modules = [
+        xsp.darwinModules.default
+        ({ pkgs, ... }: {
+          services.xsp.enable = true;
+          environment.systemPackages = [ pkgs.alacritty ];
+        })
+        # your configuration, with system.primaryUser set
+      ];
+    };
+  };
+}
+```
+
+```sh
+sudo darwin-rebuild switch --flake ~/.config/nix-darwin
+```
+
+The module puts `xsp` on your path and starts the same login agent as
+`build.sh`, for `system.primaryUser`, with the same log. Allow Accessibility
+when it asks. What `build.sh` takes from the environment is an option here:
+`services.xsp.alacritty`, `services.xsp.overlay = false`,
+`services.xsp.codesignIdentity` and `services.xsp.codesignKeychain`, which the
+next section explains. There is no option for the keychain's password, since
+the nix store is readable by every user, so that keychain must be unlocked.
+Nix builds are signed ad hoc, so macOS asks for Accessibility again whenever an
+update changes the binary. If you used `build.sh` before, stop and remove that
+copy first, as below. To remove the nix one, take the module out and switch
+again. The build needs `apple-sdk_26` from nixpkgs; if yours is older, drop the
+`follows` line, and the flake builds with the nixpkgs it pins.
+
 ### Signing
 
 `build.sh` signs ad hoc unless told otherwise, and xsp signs the pads' apps the

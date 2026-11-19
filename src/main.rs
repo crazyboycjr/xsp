@@ -414,13 +414,22 @@ fn pads() -> Vec<Option<Pad>> {
 }
 
 /// The overlay shim, if it is enabled and built. XSP_OVERLAY=0 in the LaunchAgent plist turns it
-/// off and the scratchpads fall back to Alacritty's own SimpleFullscreen.
+/// off and the scratchpads fall back to Alacritty's own SimpleFullscreen. It sits beside the xsp
+/// binary (build.sh's ~/.local/bin) or in ../lib (a nix package), else in ~/.local/bin.
 fn overlay_dylib() -> Option<String> {
     if std::env::var("XSP_OVERLAY").as_deref() == Ok("0") {
         return None;
     }
-    let path = format!("{}/.local/bin/xsp-overlay.dylib", home());
-    std::path::Path::new(&path).exists().then_some(path)
+    let mut candidates = Vec::new();
+    // Resolved, so a symlink to the binary (a nix profile's bin) still leads to its package
+    let exe = std::env::current_exe().and_then(std::fs::canonicalize);
+    if let Some(dir) = exe.as_ref().ok().and_then(|e| e.parent()) {
+        candidates.push(dir.join("xsp-overlay.dylib"));
+        candidates.push(dir.join("../lib/xsp-overlay.dylib"));
+    }
+    candidates.push(format!("{}/.local/bin/xsp-overlay.dylib", home()).into());
+    let path = candidates.into_iter().find(|p| p.exists())?;
+    Some(std::fs::canonicalize(&path).unwrap_or(path).to_string_lossy().into_owned())
 }
 
 /// Opens the scratchpad through LaunchServices: a launch when it is not running; otherwise a
