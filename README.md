@@ -33,9 +33,10 @@ On Linux, [xmonad](https://xmonad.org/) gives me three scratchpad terminals on
 F1, F3 and F4. A key brings one up over whatever I am doing, the same key puts
 it away, and only one is out at a time. I use them constantly, and on the Mac I
 wanted exactly that: the same keys, the same behaviour, in
-[Alacritty](https://alacritty.org/). The usual Mac answer is a hotkey window
-like iTerm2's, but that ties the pads to iTerm2, and I wanted Alacritty with
-xmonad's keys and behaviour.
+[Alacritty](https://alacritty.org/). The usual Mac answer is a drop-down
+terminal such as iTerm2's hotkey window or Ghostty's quick terminal, but each
+belongs to its own terminal app, and I wanted Alacritty with xmonad's keys and
+behaviour.
 
 The keys were the easy part. macOS 27 gives every ordinary app a place in the
 Dock and the app switcher, won't let one app hide another app that stays out of
